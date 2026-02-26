@@ -231,27 +231,82 @@ Faites preuve de pédagogie et soyez clair dans vos explications et procedures d
 **Exercice 1 :**  
 Quels sont les composants dont la perte entraîne une perte de données ?  
   
-*..Répondez à cet exercice ici..*
+Le composant critique pour l’intégrité des données est le PVC pra-data, car c’est lui qui contient les données “vivantes” (base SQLite en production).
+La perte de données devient totale si, en plus, le PVC pra-backup est également perdu (ou si la sauvegarde disponible est trop ancienne).
+
+Détail par composant :
+
+Le Pod : sa suppression ne provoque pas de perte de données, car les données ne sont pas stockées dans le conteneur. Kubernetes recrée automatiquement un pod identique.
+
+PVC pra-data : c’est le stockage principal. Sa perte entraîne la perte des données en cours (scénario PRA).
+
+PVC pra-backup : il contient les sauvegardes. S’il est perdu en même temps que pra-data, il ne reste plus de point de restauration ⇒ perte définitive.
+
+CronJob sqlite-backup : sa suppression ne supprime pas les données existantes, mais empêche la création de nouvelles sauvegardes, ce qui augmente le RPO (on risque de perdre plus de données récentes en cas d’incident).
 
 **Exercice 2 :**  
 Expliquez nous pourquoi nous n'avons pas perdu les données lors de la supression du PVC pra-data  
   
-*..Répondez à cet exercice ici..*
+Dans le scénario 1 (PCA / crash ou suppression du pod), les données n’ont pas été perdues car la base SQLite est stockée sur un volume persistant (PVC pra-data), et non dans le système de fichiers du conteneur.
+
+Quand un pod est détruit, Kubernetes supprime l’environnement d’exécution du conteneur (stockage éphémère), mais le PVC reste intact car c’est une ressource indépendante. Lors de la recréation automatique du pod par le Deployment, le nouveau pod remonte le même PVC et retrouve la base de données inchangée.
 
 **Exercice 3 :**  
 Quels sont les RTO et RPO de cette solution ?  
   
-*..Répondez à cet exercice ici..*
+RPO (Recovery Point Objective)
+
+Le CronJob effectue une sauvegarde toutes les 1 minute. En cas de sinistre, la perte maximale correspond aux écritures effectuées entre la dernière sauvegarde et l’incident.
+
+-  RPO ≈ 1 minute
+
+RTO (Recovery Time Objective)
+
+La reprise nécessite une procédure manuelle (arrêt/scale down, gestion des PVC, réapplication des manifests, job de restauration, relance des jobs). Si l’opérateur est disponible et connaît la procédure, cela prend typiquement quelques minutes.
+
+-  RTO ≈ 5 à 10 minutes (restauration manuelle)
 
 **Exercice 4 :**  
 Pourquoi cette solution (cet atelier) ne peux pas être utilisé dans un vrai environnement de production ? Que manque-t-il ?   
   
-*..Répondez à cet exercice ici..*
+Cette solution est pertinente pour apprendre, mais elle n’est pas “production-ready” à cause de limites majeures :
+
+Pas de séparation géographique / même domaine de panne : pra-data et pra-backup sont dans le même cluster (voire même node). Un incident d’infrastructure peut faire perdre les deux.
+
+Pas de chiffrement : sauvegardes en clair (au repos et/ou en transit). En production, on chiffre et on gère les clés (KMS/Vault).
+
+Pas de supervision / alerting : aucun mécanisme ne détecte un échec de backup, un manque d’espace disque, ou un retard de sauvegarde.
+
+Restauration non automatisée : le RTO dépend fortement d’une intervention humaine (risque opérationnel).
+
+SQLite limité pour la prod : base mono-fichier, pas de réplication native, faible tolérance à la charge/concurrence.
+
+Politique de rétention absente : il faut gérer la conservation, rotation, versioning, et tests réguliers de restauration.
   
 **Exercice 5 :**  
 Proposez une archtecture plus robuste.   
   
-*..Répondez à cet exercice ici..*
+Proposition (robuste & “production-like”)
+
+Objectif : éviter le “single point of failure”, sortir les backups du cluster, et rendre la restauration fiable.
+
+Composants clés
+
+Base de données production : PostgreSQL (ou MySQL) au lieu de SQLite
+
+HA / Réplication : primaire + réplique(s) (ou cluster managé)
+
+Backups :
+
+snapshots + backups logiques (ex: pg_dump) ou WAL shipping (PITR)
+
+stockage externalisé hors cluster (S3 / Blob) + versioning + rétention
+
+Chiffrement : TLS + chiffrement at-rest + KMS
+
+Observabilité : Prometheus/Grafana + alerting (backup en échec, RPO dépassé)
+
+Disaster Recovery : second site/cluster + runbook automatisé (ArgoCD + scripts)
 
 ---------------------------------------------------
 Séquence 6 : Ateliers  
